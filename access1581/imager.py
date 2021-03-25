@@ -301,15 +301,27 @@ class SingleIBMTrackSectorParser:
         print (sectorMarkers) # DEBUG
         # seems we have the correct data to decode our sector here.
         # following is according to http://lclevy.free.fr/adflib/adf_info.html#p5
-        for marker in sectorMarkers:
+        for marker in sectorMarkers: # DEBUG
+            
+            # check if we have enough data
             offset=marker
             print(f'offset {offset}:')
-            info_hi=self.mfmDecode(self.decompressedBitstream[offset:offset+64]) # 64 <> 2 longs
-            info_hi=self.convertBitstreamBytes(info_hi,True)
-            info_h=""; idxs=[0,4,1,5,2,6,3,7]                   # strange, we should have one long of odd bits and one long of even bits
-            for i in range(8):                                  # but it makes more sens swapping by group of 4 like this.
-                info_h+=info_hi[idxs[i]]
-            print('Sector Header Info: ' + info_hi + ' => ' + info_h[0:2] + ' ' + info_h[2:4] + ' ' + info_h[4:6] + ' ' + info_h[6:8]) # DEBUG
+            if len(self.decompressedBitstream) < marker + 10 * 64:
+                print("too short.")
+                break 
+            
+            # https://forum.amiga.org/index.php?topic=73072.0  code snippet to decode sector info 
+            info_odd=bitstring.BitArray('0b'+self.decompressedBitstream[offset:offset+32]) # 64 <> 2 longs
+            info_even=bitstring.BitArray('0b'+self.decompressedBitstream[offset+32:offset+64])
+
+            info_odd <<= 1 # shift left
+            info_odd &= bitstring.BitArray('0xAAAAAAAA')
+
+            info_even &= bitstring.BitArray('0x55555555')
+            
+            info = info_odd | info_even 
+
+            print("Sector Header info: " + info.hex)
 
             offset+=64
             label_odd=self.decompressedBitstream[offset:offset+(32*4)] # 4 longs
