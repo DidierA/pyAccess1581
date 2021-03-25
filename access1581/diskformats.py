@@ -34,7 +34,7 @@ class diskFormatRoot:
         self.sectorSize     = 512 # bytes
         self.swapsides      = False
         self.imageExtension = 'img'
-        self.mfmSyncMarkA1  = '100010010001001' #special mfm sync mark
+        self.mfmSyncMarkA1  = '100010010001001' #special mfm sync mark 0x4489
 
 class diskFormatDOS(diskFormatRoot):
     def __init__(self):
@@ -72,3 +72,14 @@ class diskFormat1581(diskFormatDOS):
         self.expectedSectorsPerTrack = 10
         self.swapsides              = True
         self.imageExtension         = 'd81'
+
+# http://lclevy.free.fr/adflib/adf_info.html#p5
+class diskFormatAmiga(diskFormatDOS):
+    def __init__(self):
+        super().__init__()
+        self.name                   = 'amiga'
+        self.expectedSectorsPerTrack = 11
+        self.swapsides              = False
+        self.imageExtension         = 'adf'
+        self.sectorStartSyncMarker =  self.mfm00 + '1' + self.mfm00  + (('0' + self.mfmSyncMarkA1) * 2)
+        self.sectorStartMarker     =  self.sectorStartSyncMarker        

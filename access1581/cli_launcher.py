@@ -29,11 +29,13 @@ class launcher:
         #my default serial device addresses
         self.serialDeviceAddresses = {
             'Linux' : '/dev/ttyUSB0',
-            'Windows' : 'COM5'
+            'Windows' : 'COM5',
+            'Darwin' : '/dev/cu.usbserial-A50285BI'
         }
         self.diskFormatTypes = {
             "cbm1581" : diskFormat1581,
-            "ibmdos"  : diskFormatDOS
+            "ibmdos"  : diskFormatDOS,
+            "amiga"   : diskFormatAmiga
         }
         self.defaultDisktype = 'cbm1581'
         self.defaultOutputImageName = \

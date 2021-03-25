@@ -111,8 +111,10 @@ class SingleTrackSectorListValidator:
             self.addValidSectors( self.trackParser.detectSectors(trackno, headno), trackno, headno, (self.retries == 1))
             #also make raw stream accessible for debug or other purposes
             self.decompressedBitstream = self.trackParser.getDecompressedBitstream()
+            # print(self.decompressedBitstream)
             vsc = len(self.validSectorData)
             print (f"Reading track: {trackno:2d}, head: {headno}. Number of valid sectors found: {vsc}/{self.diskFormat.expectedSectorsPerTrack}")
+            print(f"len: {len(self.decompressedBitstream)}")
             if vsc == self.diskFormat.expectedSectorsPerTrack:
                 self.retries = 0
             else:
@@ -126,9 +128,9 @@ class SingleTrackSectorListValidator:
         elif len(self.validSectorData) == 0:
             trackData = bytes(chr(0) * self.diskFormat.sectorSize * self.diskFormat.expectedSectorsPerTrack ,'utf-8')
             #print ("bytes: " + str(len(trackData)))
-            print("  Notice: Filled up empty track with zeros.");
+            print("  Notice: Filled up empty track with zeros.")
         else:
-            print("  Not enough sectors found.");
+            print("  Not enough sectors found.")
         return trackData
 
     def getFirstSectorOffset(self):
@@ -235,9 +237,12 @@ class SingleIBMTrackSectorParser:
     def getDecompressedBitstream(self):
         return self.decompressedBitstream
 
+    # MFM bit coding: 1 => 01, 0 =>  (10 if previous bit was 0, 00 otherwise).
+    # So to decode, just keep every other bit:
+    # 0100 will become 10, and so on. 
     def mfmDecode(self, stream):
         result = ""
-        keep = False;
+        keep = False
         for char in stream:
             if keep is True:
                 result += char
@@ -293,8 +298,29 @@ class SingleIBMTrackSectorParser:
                 else:
                     #print("Removing sector marker because it overshot the bitstream")
                     sectorMarkers.remove(sectorMarkers[cnt])
-        #print (sectorMarkers)
-        #print (dataMarkers)
+        print (sectorMarkers) # DEBUG
+        # seems we have the correct data to decode our sector here.
+        # following is according to http://lclevy.free.fr/adflib/adf_info.html#p5
+        for marker in sectorMarkers:
+            offset=marker
+            print(f'offset {offset}:')
+            info_hi=self.mfmDecode(self.decompressedBitstream[offset:offset+64]) # 64 <> 2 longs
+            info_hi=self.convertBitstreamBytes(info_hi,True)
+            info_h=""; idxs=[0,4,1,5,2,6,3,7]                   # strange, we should have one long of odd bits and one long of even bits
+            for i in range(8):                                  # but it makes more sens swapping by group of 4 like this.
+                info_h+=info_hi[idxs[i]]
+            print('Sector Header Info: ' + info_hi + ' => ' + info_h[0:2] + ' ' + info_h[2:4] + ' ' + info_h[4:6] + ' ' + info_h[6:8]) # DEBUG
+
+            offset+=64
+            label_odd=self.decompressedBitstream[offset:offset+(32*4)] # 4 longs
+            label_odd=self.convertBitstreamBytes(self.mfmDecode(label_odd),True)
+            offset += 32*4
+            label_even=self.decompressedBitstream[offset:offset+(32*4)] # 4 longs
+            label_even=self.convertBitstreamBytes(self.mfmDecode(label_even),True)
+            offset+=64
+            print('Sector Header label odd: (should be zero)' + label_odd)
+            print('Sector Header label even: (should be zero)' + label_even)
+        print (dataMarkers) # DEBUG
         return (sectorMarkers, dataMarkers)
 
     def getFirstSectorOffset(self):

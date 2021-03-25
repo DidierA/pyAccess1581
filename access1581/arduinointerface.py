@@ -90,14 +90,17 @@ class ArduinoFloppyControlInterface:
         self.serial = Serial( \
             self.serialDevice, \
             2000000, \
-            timeout=None, \
+            timeout=10, \
             exclusive=True, \
+            rtscts=True
             #bytesize=Serial.EIGHTBITS \
         )
         self.connectionEstablished = True
         print ("Connection to microcontroller established via " + self.serialDevice )
-        self.serial.reset_input_buffer()
-        self.serial.rtscts = True
+        print ("Waiting 2s for Arduino to wake up")
+        time.sleep(2)
+        # self.serial.reset_input_buffer()
+        # self.serial.rtscts = True
         self.sendCommand("version")
         self.sendCommand("rewind")
         #print( self.serial.get_settings())
@@ -126,8 +129,10 @@ class ArduinoFloppyControlInterface:
             #print ("...Processing cmd '" + cmdname+ "'")
             self.serial.reset_input_buffer()
             self.serial.reset_output_buffer()
+            print ('Sending ' + repr(cmd+param))
             self.serial.write( cmd + param)
             reply = self.serial.read(1)
+            print('Received ' + repr(reply))
             if cmdname == "version":
                 firmware = self.serial.read(4)
                 print ("Firmware version on Arduino: " + str(firmware))
