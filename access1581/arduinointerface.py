@@ -90,7 +90,7 @@ class ArduinoFloppyControlInterface:
         self.serial = Serial( \
             self.serialDevice, \
             2000000, \
-            timeout=10, \
+            timeout=5, \
             exclusive=True, \
             rtscts=True
             #bytesize=Serial.EIGHTBITS \
@@ -307,11 +307,12 @@ class ArduinoFloppyControlInterface:
             if tracklength < 10223:
                 print ("Track length suspicously short: " + str(tracklength) + " bytes")
         else:
-            self.serial.timeout = 1
-            trackbytes = self.serial.read(10380)
-            self.serial.timeout = 0
-            trackbytes = trackbytes + self.serial.readline()
-            self.serial.timeout = None
+            #self.serial.timeout = 1
+            trackbytes = self.serial.read_until(expected=b'\x00',size=(0x1900*2+0x44)+1) # The Arduino sends 0 at the end of transmission.
+            #self.serial.timeout = 0
+            # trackbytes = trackbytes + self.serial.readline()
+            #self.serial.timeout = None
+            print(f'Read {len(trackbytes)} bytes from serial. Last byte:{trackbytes[-1]}')
         duration_trackread = int((time.time() - starttime_trackread)*1000)/1000
         self.total_duration_trackread += duration_trackread
 #        print  ("    Track read duration:                            " + str(duration_trackread) + " seconds")

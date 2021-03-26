@@ -83,3 +83,5 @@ class diskFormatAmiga(diskFormatDOS):
         self.imageExtension         = 'adf'
         self.sectorStartSyncMarker =  self.mfm00 + '1' + self.mfm00  + (('0' + self.mfmSyncMarkA1) * 2)
         self.sectorStartMarker     =  self.sectorStartSyncMarker        
+        self.sectorLength          =   544*2*8
+        

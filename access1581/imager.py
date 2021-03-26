@@ -249,8 +249,29 @@ class SingleIBMTrackSectorParser:
             keep = not keep
         return result
 
+    def amigaMFMDecode(self, stream):
+        # Decodes AMIGA MFM as described here : http://lclevy.free.fr/adflib/adf_info.html#p5
+        # data is stored in two halves, odd bits first, and even bits after.
+        # https://forum.amiga.org/index.php?topic=73072.0  code snippet to decode sector info 
+        # returns bitstring.BitArray
+
+        assert len(stream) % 4 == 0 , 'stream must be even'
+        data_size=int(len(stream)/2)
+
+        odd = bitstring.BitArray('0b' + stream[0:data_size])
+        even = bitstring.BitArray('0b' + stream[data_size:])
+        mask = bitstring.BitArray('0b' + '01' * int(data_size/2))
+
+        odd &= mask 
+        odd <<= 1 # shift left
+
+        even &= mask 
+        
+        decoded = odd | even 
+        return decoded
+
     def convertBitstreamBytes( self, data, flagHexInt ):
-        if data is "":
+        if data == "":
             return ""
         ba = bitstring.BitArray('0b'+data )
         return ba.hex if flagHexInt is True else ba.int
@@ -305,33 +326,33 @@ class SingleIBMTrackSectorParser:
             
             # check if we have enough data
             offset=marker
-            print(f'offset {offset}:')
-            if len(self.decompressedBitstream) < marker + 10 * 64:
+            print(f'offset {offset}: remaining size {len(self.decompressedBitstream[offset -8:])}')
+            if len(self.decompressedBitstream[offset -8:]) < 544*2*8:
                 print("too short.")
                 break 
             
-            # https://forum.amiga.org/index.php?topic=73072.0  code snippet to decode sector info 
-            info_odd=bitstring.BitArray('0b'+self.decompressedBitstream[offset:offset+32]) # 64 <> 2 longs
-            info_even=bitstring.BitArray('0b'+self.decompressedBitstream[offset+32:offset+64])
-
-            info_odd <<= 1 # shift left
-            info_odd &= bitstring.BitArray('0xAAAAAAAA')
-
-            info_even &= bitstring.BitArray('0x55555555')
-            
-            info = info_odd | info_even 
-
-            print("Sector Header info: " + info.hex)
-
+            # Header info: long (4 bytes) at offset 0x08
+            info=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+64]) # 64 bits MFM encoded => 32 bits of sector header info
+            print("Sector Header  info: " + info.hex)
             offset+=64
-            label_odd=self.decompressedBitstream[offset:offset+(32*4)] # 4 longs
-            label_odd=self.convertBitstreamBytes(self.mfmDecode(label_odd),True)
-            offset += 32*4
-            label_even=self.decompressedBitstream[offset:offset+(32*4)] # 4 longs
-            label_even=self.convertBitstreamBytes(self.mfmDecode(label_even),True)
-            offset+=64
-            print('Sector Header label odd: (should be zero)' + label_odd)
-            print('Sector Header label even: (should be zero)' + label_even)
+
+            # Sector label: 4 longs at offset 0x10 (usually full of zeroes)
+            print('Sector Header label: ' + self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(32*8)]).hex)
+            offset+= 32*8
+
+            # Header checksum: long at offset 0x30
+            print('Header checksum: ' + self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(32*2)]).hex)
+            offset +=32*2
+
+            # Data checksum: long at offset 0x38
+            print('Data checksum: ' + self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(32*2)]).hex)
+            offset +=32*2
+
+            # Data: 512 bytes at offset 0x40
+            print('Data: ' + repr(self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(512*8*2)]).tobytes()))
+            offset += 512*8*2
+            print('offset at end: ' + str(offset))
+
         print (dataMarkers) # DEBUG
         return (sectorMarkers, dataMarkers)
 
