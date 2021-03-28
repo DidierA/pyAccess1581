@@ -249,26 +249,36 @@ class SingleIBMTrackSectorParser:
             keep = not keep
         return result
 
-    def amigaMFMDecode(self, stream):
-        # Decodes AMIGA MFM as described here : http://lclevy.free.fr/adflib/adf_info.html#p5
-        # data is stored in two halves, odd bits first, and even bits after.
-        # https://forum.amiga.org/index.php?topic=73072.0  code snippet to decode sector info 
-        # returns bitstring.BitArray
+    def amigaMFMDecode(self, stream: str) -> (bitstring.BitArray, bitstring.BitArray):
+        '''
+        Decodes AMIGA MFM as described here : http://lclevy.free.fr/adflib/adf_info.html#p24
+        data is stored in two halves, odd bits first, and even bits after.
+        returns ( decodeData, checksum)
+        '''
 
         assert len(stream) % 4 == 0 , 'stream must be even'
         data_size=int(len(stream)/2)
 
+        checksum=bitstring.BitArray('0b' + '0'*32)
         odd = bitstring.BitArray('0b' + stream[0:data_size])
         even = bitstring.BitArray('0b' + stream[data_size:])
         mask = bitstring.BitArray('0b' + '01' * int(data_size/2))
 
+        # calculate checksum. derived from the method used ADFWriter.cpp :
+        # https://github.com/RobSmithDev/ArduinoFloppyDiskReader/blob/master/ArduinoFloppyReader/lib/ADFWriter.cpp
+        for i in range(0,data_size,32): # divide in longs (=4 bytes)
+            checksum ^= odd[i:i+32]
+            checksum ^= even[i:i+32]
+
+        checksum &= mask[0:32]
+
+        # decode data
         odd &= mask 
         odd <<= 1 # shift left
-
         even &= mask 
-        
-        decoded = odd | even 
-        return decoded
+        decoded = odd | even
+
+        return (decoded, checksum)
 
     def convertBitstreamBytes( self, data, flagHexInt ):
         if data == "":
@@ -321,7 +331,7 @@ class SingleIBMTrackSectorParser:
                     sectorMarkers.remove(sectorMarkers[cnt])
         print (sectorMarkers) # DEBUG
         # seems we have the correct data to decode our sector here.
-        # following is according to http://lclevy.free.fr/adflib/adf_info.html#p5
+        # following is according to http://lclevy.free.fr/adflib/adf_info.html#p23
         for marker in sectorMarkers: # DEBUG
             
             # check if we have enough data
@@ -332,26 +342,38 @@ class SingleIBMTrackSectorParser:
                 break 
             
             # Header info: long (4 bytes) at offset 0x08
-            info=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+64]) # 64 bits MFM encoded => 32 bits of sector header info
+            (info,calculated_header_checksum)=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+64]) # 64 bits MFM encoded => 32 bits of sector header info
             print("Sector Header  info: " + info.hex)
             offset+=64
 
             # Sector label: 4 longs at offset 0x10 (usually full of zeroes)
-            print('Sector Header label: ' + self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(32*8)]).hex)
+            (label,checksum)=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(32*8)])
+            print('Sector Header label: ' + label.hex)
             offset+= 32*8
 
+            calculated_header_checksum ^= checksum
+            print('Calc   checksum: ' + calculated_header_checksum.hex)
+            
             # Header checksum: long at offset 0x30
-            print('Header checksum: ' + self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(32*2)]).hex)
+            (header_checksum,undef)=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(32*2)])
+            print('Header checksum: ' + header_checksum.hex)
+            
+            # print('Calc   checksum: ' + caluclated_header_checksum.hex)
+
             offset +=32*2
 
             # Data checksum: long at offset 0x38
-            print('Data checksum: ' + self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(32*2)]).hex)
+            (data_checksum,calc)=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(32*2)])
+            print('Data checksum: ' + data_checksum.hex + ' (' + str(data_checksum == calc) + ')')
             offset +=32*2
 
             # Data: 512 bytes at offset 0x40
-            print('Data: ' + repr(self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(512*8*2)]).tobytes()))
+            (data,undef)=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(512*8*2)])
+            print('Data: ' + repr(data.tobytes()))
+                        
             offset += 512*8*2
             print('offset at end: ' + str(offset))
+
 
         print (dataMarkers) # DEBUG
         return (sectorMarkers, dataMarkers)
