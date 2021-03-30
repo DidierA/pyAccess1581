@@ -1,0 +1,20 @@
+
+
+IBMDoubleDensityFloppyDiskImager()
+    __init__()
+        instanciates  SingleTrackSectorListValidator()
+        calls SingleTrackSectorListValidator.processTrack( ) for each trackno, headno to get track Data
+        dumps track data to file.
+
+
+SingleTrackSectorListValidator() => maybe should also be changed
+    __init__()
+        instanciates SingleTrackSectorParser() => SingleIBMTrackSectorParser, + AMiga to be written
+    processTrack()
+        calls AddValidSectors() which does CRC checks that must be changed for amiga too.
+
+
+SingleAMigaTrackSectorPArser:
+could inherit SingleIBMTrackSectorParser
+rewrite of 
+    getMarkers()

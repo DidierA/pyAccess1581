@@ -94,7 +94,7 @@ class SingleTrackSectorListValidator:
         self.storeBitstream = storeBitstream
         self.decompressedBitstream = ""
         self.arduino = arduinoInterface
-        self.trackParser = SingleIBMTrackSectorParser(self.diskFormat, self.arduino)
+        self.trackParser = SingleTrackSectorParser(self.diskFormat, self.arduino)
         self.stopOnError = stopOnError
         self.printSectorDebugInfo = False
 
@@ -249,28 +249,32 @@ class SingleIBMTrackSectorParser:
             keep = not keep
         return result
 
-    def amigaMFMDecode(self, stream: str) -> (bitstring.BitArray, bitstring.BitArray):
+    def amigaMFMDecode(self, stream: str, *argv) -> bitstring.BitArray:
         '''
         Decodes AMIGA MFM as described here : http://lclevy.free.fr/adflib/adf_info.html#p24
         data is stored in two halves, odd bits first, and even bits after.
+        input: stream: str containing the encoded track data
+        optional arg: checksum (of type bitsting.BitArray). If present, will be xored with the checksum of the decoded data.
         returns ( decodeData, checksum)
         '''
 
         assert len(stream) % 4 == 0 , 'stream must be even'
         data_size=int(len(stream)/2)
 
-        checksum=bitstring.BitArray('0b' + '0'*32)
+        # checksum=bitstring.BitArray('0b' + '0'*32)
         odd = bitstring.BitArray('0b' + stream[0:data_size])
         even = bitstring.BitArray('0b' + stream[data_size:])
         mask = bitstring.BitArray('0b' + '01' * int(data_size/2))
 
         # calculate checksum. derived from the method used ADFWriter.cpp :
         # https://github.com/RobSmithDev/ArduinoFloppyDiskReader/blob/master/ArduinoFloppyReader/lib/ADFWriter.cpp
-        for i in range(0,data_size,32): # divide in longs (=4 bytes)
-            checksum ^= odd[i:i+32]
-            checksum ^= even[i:i+32]
+        if (len(argv)>0):
+            checksum=argv[0]
+            for i in range(0,data_size,32): # divide in longs (=4 bytes)
+                checksum ^= odd[i:i+32]
+                checksum ^= even[i:i+32]
 
-        checksum &= mask[0:32]
+            checksum &= mask[0:32]
 
         # decode data
         odd &= mask 
@@ -278,7 +282,7 @@ class SingleIBMTrackSectorParser:
         even &= mask 
         decoded = odd | even
 
-        return (decoded, checksum)
+        return decoded
 
     def convertBitstreamBytes( self, data, flagHexInt ):
         if data == "":
@@ -307,6 +311,7 @@ class SingleIBMTrackSectorParser:
                 previousBits += len( rawSector ) + self.sectorStartMarkerLength
                 sectorMarkers.append( previousBits )
         if len(sectorMarkers) > 0:
+            # this logic is not applicable to Amiga format. We don't have data start marker, it's all offsets from the sector start.
             dataMarkerMatchesIterator = re.finditer( self.diskFormat.sectorDataStartMarker, self.decompressedBitstream)
             for dataMarker in dataMarkerMatchesIterator:
                 (startPosDataMarker, endPosDataMarker) = (dataMarker.span() )
@@ -342,35 +347,35 @@ class SingleIBMTrackSectorParser:
                 break 
             
             # Header info: long (4 bytes) at offset 0x08
-            (info,calculated_header_checksum)=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+64]) # 64 bits MFM encoded => 32 bits of sector header info
+            current_checksum=bitstring.BitArray(int=0,length=32)
+            info=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+64], current_checksum) # 64 bits MFM encoded => 32 bits of sector header info
             print("Sector Header  info: " + info.hex)
             offset+=64
 
             # Sector label: 4 longs at offset 0x10 (usually full of zeroes)
-            (label,checksum)=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(32*8)])
+            label=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(32*8)], current_checksum)
             print('Sector Header label: ' + label.hex)
             offset+= 32*8
 
-            calculated_header_checksum ^= checksum
-            print('Calc   checksum: ' + calculated_header_checksum.hex)
+            print('Calc   checksum: ' + current_checksum.hex)
             
             # Header checksum: long at offset 0x30
-            (header_checksum,undef)=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(32*2)])
+            header_checksum=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(32*2)])
             print('Header checksum: ' + header_checksum.hex)
             
-            # print('Calc   checksum: ' + caluclated_header_checksum.hex)
-
             offset +=32*2
 
             # Data checksum: long at offset 0x38
-            (data_checksum,calc)=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(32*2)])
-            print('Data checksum: ' + data_checksum.hex + ' (' + str(data_checksum == calc) + ')')
+            data_checksum=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(32*2)])
+            
             offset +=32*2
 
+            current_checksum=bitstring.BitArray(int=0,length=32)
             # Data: 512 bytes at offset 0x40
-            (data,undef)=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(512*8*2)])
+            data=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(512*8*2)],current_checksum)
             print('Data: ' + repr(data.tobytes()))
-                        
+            print('Data checksum: ' + data_checksum.hex + ' (' + str(current_checksum == data_checksum) + ')')
+
             offset += 512*8*2
             print('offset at end: ' + str(offset))
 
@@ -408,3 +413,6 @@ class SingleIBMTrackSectorParser:
         print ( "Total duration of all track reads   : " + tdtr + " seconds")
         print ( "Total duration other serial commands: " + tdtc + " seconds")
         print ( "Total duration of all decompressions: " + tdtd + " seconds")
+
+class SingleTrackSectorParser(SingleIBMTrackSectorParser):
+    pass
