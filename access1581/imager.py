@@ -94,9 +94,18 @@ class SingleTrackSectorListValidator:
         self.storeBitstream = storeBitstream
         self.decompressedBitstream = ""
         self.arduino = arduinoInterface
-        self.trackParser = SingleTrackSectorParser(self.diskFormat, self.arduino)
+        self.trackParser = self._getSingleTrackSectorParser()
         self.stopOnError = stopOnError
         self.printSectorDebugInfo = False
+
+    def _getSingleTrackSectorParser(self):
+        '''
+        returns the appropriate track sector parser for the current diskFormat
+        '''
+        if issubclass(self.diskFormat.__class__, diskFormatAmiga):
+            return SingleAmigaTrackSectorParser(self.diskFormat, self.arduino)
+        else:
+            return SingleIBMTrackSectorParser(self.diskFormat, self.arduino)
 
     def printSerialStats(self):
         self.trackParser.printSerialStats()
@@ -114,7 +123,7 @@ class SingleTrackSectorListValidator:
             # print(self.decompressedBitstream)
             vsc = len(self.validSectorData)
             print (f"Reading track: {trackno:2d}, head: {headno}. Number of valid sectors found: {vsc}/{self.diskFormat.expectedSectorsPerTrack}")
-            print(f"len: {len(self.decompressedBitstream)}")
+            # print(f"len: {len(self.decompressedBitstream)}") # DEBUG
             if vsc == self.diskFormat.expectedSectorsPerTrack:
                 self.retries = 0
             else:
@@ -249,6 +258,94 @@ class SingleIBMTrackSectorParser:
             keep = not keep
         return result
 
+    def convertBitstreamBytes( self, data, flagHexInt ):
+        if data == "":
+            return ""
+        ba = bitstring.BitArray('0b'+data )
+        return ba.hex if flagHexInt is True else ba.int
+
+    def grabSectorChunkHex( self, start, length):
+        return self.convertBitstreamBytes( self.mfmDecode( self.currentSectorBitstream[ start: start+length ]), True)
+
+    def grabSectorChunkInt( self, start, length):
+        sfrom = start*8
+        sto = sfrom + length*8
+        return self.convertBitstreamBytes( self.mfmDecode( self.currentSectorBitstream[ sfrom: sto ]), False)
+
+    def getMarkers(self):
+        sectorMarkers = []
+        dataMarkers = []
+        dataMarkersTmp = []
+        rawSectors = re.split( self.diskFormat.sectorStartMarker, self.decompressedBitstream)
+        if len(rawSectors) > 0:
+            self.firstSectorOffset = len( rawSectors[0] )
+            del rawSectors[-1] #delete last entry
+            previousBits = 0
+            for rawSector in rawSectors:
+                previousBits += len( rawSector ) + self.sectorStartMarkerLength
+                sectorMarkers.append( previousBits )
+        if len(sectorMarkers) > 0:
+            dataMarkerMatchesIterator = re.finditer( self.diskFormat.sectorDataStartMarker, self.decompressedBitstream)
+            for dataMarker in dataMarkerMatchesIterator:
+                (startPosDataMarker, endPosDataMarker) = (dataMarker.span() )
+                if endPosDataMarker >= sectorMarkers[0] + self.diskFormat.legalOffsetRangeLowerBorder:
+                    dataMarkersTmp.append(endPosDataMarker)
+                #else:
+                #    print("Notice: Ignoring datamarker - is in front of first sector marker")
+            cnt = 0
+            for dataMarker in dataMarkersTmp:
+                offset = dataMarker - sectorMarkers[cnt]
+                if not offset in self.diskFormat.legalOffsetRange:
+                    print ("getMarkers / Unusual offset found: "+str(offset))
+                #now we check if the sector's data might be cut off at the end
+                #of the chunk of the track we have, the added 32 represents
+                #the length of the CRC checksum of the sector data
+                overshoot = dataMarker + self.sectorDataBitSize + 32
+                if overshoot <= len( self.decompressedBitstream ):
+                    dataMarkers.append( dataMarker )
+                    cnt+=1
+                else:
+                    #print("Removing sector marker because it overshot the bitstream")
+                    sectorMarkers.remove(sectorMarkers[cnt])
+        # print (sectorMarkers)
+        # print (dataMarkers)
+        return (sectorMarkers, dataMarkers)
+
+    def getFirstSectorOffset(self):
+        if self.firstSectorOffset == -1:
+            raise Exception("Don't call getFirstSectorOffset before parsing the track")
+        return self.firstSectorOffset
+
+    def parseSingleSector(self, sectorStart, dataMarker):
+        prelude = 4 * 16 # a1a1a1fe or a1a1a1fb
+        dataMarker = prelude + dataMarker - sectorStart
+        self.currentSectorBitstream = self.decompressedBitstream[sectorStart - prelude : sectorStart + self.sectorDataBitSize + 32 + dataMarker]
+        #rawMfmDecoded = self.mfmDecode( self.currentSectorBitstream)
+        #rdl = len(rawMfmDecoded)
+        #rawstream = self.convertBitstreamBytes( rawMfmDecoded[0:int(rdl/4)*4], True)
+
+        return {
+            "headermeta"   : self.grabSectorChunkHex(  0, 128),#complete raw header data for crc check
+            "trackno"      : self.grabSectorChunkInt(  8,  2),
+            "sideno"       : self.grabSectorChunkInt( 10,  2),
+            "sectorno"     : self.grabSectorChunkInt( 12,  2),
+            "sectorlength" : self.grabSectorChunkInt( 15,  1),
+            "crc_header"   : self.grabSectorChunkHex( 128, 32),
+            "datameta"     : self.grabSectorChunkHex( dataMarker - prelude, prelude), #a1a1a1fb
+            "data"         : self.grabSectorChunkHex( dataMarker, self.sectorDataBitSize),
+            "crc_data"     : self.grabSectorChunkHex( dataMarker + self.sectorDataBitSize, 32)
+        }
+
+    def printSerialStats(self):
+        (tdtr,tdtc,tdtd) = self.arduino.getStats()
+        print ( "Total duration of all track reads   : " + tdtr + " seconds")
+        print ( "Total duration other serial commands: " + tdtc + " seconds")
+        print ( "Total duration of all decompressions: " + tdtd + " seconds")
+
+class SingleTrackSectorParser(SingleIBMTrackSectorParser):
+    pass
+
+class SingleAmigaTrackSectorParser(SingleIBMTrackSectorParser):
     def amigaMFMDecode(self, stream: str, *argv) -> bitstring.BitArray:
         '''
         Decodes AMIGA MFM as described here : http://lclevy.free.fr/adflib/adf_info.html#p24
@@ -283,20 +380,6 @@ class SingleIBMTrackSectorParser:
         decoded = odd | even
 
         return decoded
-
-    def convertBitstreamBytes( self, data, flagHexInt ):
-        if data == "":
-            return ""
-        ba = bitstring.BitArray('0b'+data )
-        return ba.hex if flagHexInt is True else ba.int
-
-    def grabSectorChunkHex( self, start, length):
-        return self.convertBitstreamBytes( self.mfmDecode( self.currentSectorBitstream[ start: start+length ]), True)
-
-    def grabSectorChunkInt( self, start, length):
-        sfrom = start*8
-        sto = sfrom + length*8
-        return self.convertBitstreamBytes( self.mfmDecode( self.currentSectorBitstream[ sfrom: sto ]), False)
 
     def getMarkers(self):
         sectorMarkers = []
@@ -378,41 +461,5 @@ class SingleIBMTrackSectorParser:
 
             offset += 512*8*2
             print('offset at end: ' + str(offset))
-
-
         print (dataMarkers) # DEBUG
         return (sectorMarkers, dataMarkers)
-
-    def getFirstSectorOffset(self):
-        if self.firstSectorOffset == -1:
-            raise Exception("Don't call getFirstSectorOffset before parsing the track")
-        return self.firstSectorOffset
-
-    def parseSingleSector(self, sectorStart, dataMarker):
-        prelude = 4 * 16 # a1a1a1fe or a1a1a1fb
-        dataMarker = prelude + dataMarker - sectorStart
-        self.currentSectorBitstream = self.decompressedBitstream[sectorStart - prelude : sectorStart + self.sectorDataBitSize + 32 + dataMarker]
-        #rawMfmDecoded = self.mfmDecode( self.currentSectorBitstream)
-        #rdl = len(rawMfmDecoded)
-        #rawstream = self.convertBitstreamBytes( rawMfmDecoded[0:int(rdl/4)*4], True)
-
-        return {
-            "headermeta"   : self.grabSectorChunkHex(  0, 128),#complete raw header data for crc check
-            "trackno"      : self.grabSectorChunkInt(  8,  2),
-            "sideno"       : self.grabSectorChunkInt( 10,  2),
-            "sectorno"     : self.grabSectorChunkInt( 12,  2),
-            "sectorlength" : self.grabSectorChunkInt( 15,  1),
-            "crc_header"   : self.grabSectorChunkHex( 128, 32),
-            "datameta"     : self.grabSectorChunkHex( dataMarker - prelude, prelude), #a1a1a1fb
-            "data"         : self.grabSectorChunkHex( dataMarker, self.sectorDataBitSize),
-            "crc_data"     : self.grabSectorChunkHex( dataMarker + self.sectorDataBitSize, 32)
-        }
-
-    def printSerialStats(self):
-        (tdtr,tdtc,tdtd) = self.arduino.getStats()
-        print ( "Total duration of all track reads   : " + tdtr + " seconds")
-        print ( "Total duration other serial commands: " + tdtc + " seconds")
-        print ( "Total duration of all decompressions: " + tdtd + " seconds")
-
-class SingleTrackSectorParser(SingleIBMTrackSectorParser):
-    pass

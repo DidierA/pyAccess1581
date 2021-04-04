@@ -129,10 +129,10 @@ class ArduinoFloppyControlInterface:
             #print ("...Processing cmd '" + cmdname+ "'")
             self.serial.reset_input_buffer()
             self.serial.reset_output_buffer()
-            print ('Sending ' + repr(cmd+param))
+            # print ('Sending ' + repr(cmd+param)) # DEBUG
             self.serial.write( cmd + param)
             reply = self.serial.read(1)
-            print('Received ' + repr(reply))
+            # print('Received ' + repr(reply)) # DEBUG
             if cmdname == "version":
                 firmware = self.serial.read(4)
                 print ("Firmware version on Arduino: " + str(firmware))
@@ -300,19 +300,19 @@ class ArduinoFloppyControlInterface:
         else:
             self.serial.write(self.cmd["read_track_from_index_pulse"][0])
         #speedup for Linux where pyserial seems to be very optimized
-        if platform.system() == "Linux":
-            trackbytes = self.serial.read_until( self.hexZeroByte , 12200)
+        if platform.system() in ( 'Linux', 'Darwin') :
+            trackbytes = self.serial.read_until( self.hexZeroByte , 0x1900*2+0x44+1)
             #workaround for problematic disks
             tracklength = len(trackbytes)
             if tracklength < 10223:
                 print ("Track length suspicously short: " + str(tracklength) + " bytes")
         else:
-            #self.serial.timeout = 1
-            trackbytes = self.serial.read_until(expected=b'\x00',size=(0x1900*2+0x44)+1) # The Arduino sends 0 at the end of transmission.
-            #self.serial.timeout = 0
-            # trackbytes = trackbytes + self.serial.readline()
-            #self.serial.timeout = None
-            print(f'Read {len(trackbytes)} bytes from serial. Last byte:{trackbytes[-1]}')
+            self.serial.timeout = 1
+            trackbytes = self.serial.read(10380)
+            self.serial.timeout = 0
+            trackbytes = trackbytes + self.serial.readline()
+            self.serial.timeout = None
+        # print(f'Read {len(trackbytes)} bytes from serial. Last byte:{trackbytes[-1]}') # DEBUG
         duration_trackread = int((time.time() - starttime_trackread)*1000)/1000
         self.total_duration_trackread += duration_trackread
 #        print  ("    Track read duration:                            " + str(duration_trackread) + " seconds")
