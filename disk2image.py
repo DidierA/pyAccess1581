@@ -20,6 +20,7 @@
 '''
 
 import sys, time
+assert sys.version_info >= (3,0), 'Python 3 required, your current version is {}'.format(sys.version)
 from access1581.cli_launcher import *
 
 def main():

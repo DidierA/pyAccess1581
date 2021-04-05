@@ -342,9 +342,6 @@ class SingleIBMTrackSectorParser:
         print ( "Total duration other serial commands: " + tdtc + " seconds")
         print ( "Total duration of all decompressions: " + tdtd + " seconds")
 
-class SingleTrackSectorParser(SingleIBMTrackSectorParser):
-    pass
-
 class SingleAmigaTrackSectorParser(SingleIBMTrackSectorParser):
     def amigaMFMDecode(self, stream: str, *argv) -> bitstring.BitArray:
         '''
@@ -392,53 +389,27 @@ class SingleAmigaTrackSectorParser(SingleIBMTrackSectorParser):
             previousBits = 0
             for rawSector in rawSectors:
                 previousBits += len( rawSector ) + self.sectorStartMarkerLength
+                # check if we have enough data
+                if len(self.decompressedBitstream[previousBits-8:]) < 544*2*8:
+                    break
                 sectorMarkers.append( previousBits )
-        if len(sectorMarkers) > 0:
-            # this logic is not applicable to Amiga format. We don't have data start marker, it's all offsets from the sector start.
-            dataMarkerMatchesIterator = re.finditer( self.diskFormat.sectorDataStartMarker, self.decompressedBitstream)
-            for dataMarker in dataMarkerMatchesIterator:
-                (startPosDataMarker, endPosDataMarker) = (dataMarker.span() )
-                if endPosDataMarker >= sectorMarkers[0] + self.diskFormat.legalOffsetRangeLowerBorder:
-                    dataMarkersTmp.append(endPosDataMarker)
-                #else:
-                #    print("Notice: Ignoring datamarker - is in front of first sector marker")
-            cnt = 0
-            for dataMarker in dataMarkersTmp:
-                offset = dataMarker - sectorMarkers[cnt]
-                if not offset in self.diskFormat.legalOffsetRange:
-                    print ("getMarkers / Unusual offset found: "+str(offset))
-                #now we check if the sector's data might be cut off at the end
-                #of the chunk of the track we have, the added 32 represents
-                #the length of the CRC checksum of the sector data
-                overshoot = dataMarker + self.sectorDataBitSize + 32
-                if overshoot <= len( self.decompressedBitstream ):
-                    dataMarkers.append( dataMarker )
-                    cnt+=1
-                else:
-                    #print("Removing sector marker because it overshot the bitstream")
-                    sectorMarkers.remove(sectorMarkers[cnt])
-        print (sectorMarkers) # DEBUG
+                dataMarkers.append(previousBits+28*8*2) # start of data offset
+        
         # seems we have the correct data to decode our sector here.
         # following is according to http://lclevy.free.fr/adflib/adf_info.html#p23
         for marker in sectorMarkers: # DEBUG
-            
-            # check if we have enough data
             offset=marker
-            print(f'offset {offset}: remaining size {len(self.decompressedBitstream[offset -8:])}')
-            if len(self.decompressedBitstream[offset -8:]) < 544*2*8:
-                print("too short.")
-                break 
             
             # Header info: long (4 bytes) at offset 0x08
             current_checksum=bitstring.BitArray(int=0,length=32)
             info=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+64], current_checksum) # 64 bits MFM encoded => 32 bits of sector header info
             print("Sector Header  info: " + info.hex)
-            offset+=64
+            offset+=4*8*2 # 4 bytes * 8bits *2(1 bit is 2 mfm encoded)
 
             # Sector label: 4 longs at offset 0x10 (usually full of zeroes)
             label=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(32*8)], current_checksum)
             print('Sector Header label: ' + label.hex)
-            offset+= 32*8
+            offset+= 4*4*8*2 # 4 longs = 4*4 bytes
 
             print('Calc   checksum: ' + current_checksum.hex)
             
@@ -446,13 +417,13 @@ class SingleAmigaTrackSectorParser(SingleIBMTrackSectorParser):
             header_checksum=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(32*2)])
             print('Header checksum: ' + header_checksum.hex)
             
-            offset +=32*2
+            offset +=4*8*2 
 
             # Data checksum: long at offset 0x38
             data_checksum=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(32*2)])
             
-            offset +=32*2
-
+            offset +=4*8*2
+            print('Data offset:' + str(offset))
             current_checksum=bitstring.BitArray(int=0,length=32)
             # Data: 512 bytes at offset 0x40
             data=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(512*8*2)],current_checksum)
@@ -461,5 +432,6 @@ class SingleAmigaTrackSectorParser(SingleIBMTrackSectorParser):
 
             offset += 512*8*2
             print('offset at end: ' + str(offset))
+        print (sectorMarkers) # DEBUG
         print (dataMarkers) # DEBUG
         return (sectorMarkers, dataMarkers)
