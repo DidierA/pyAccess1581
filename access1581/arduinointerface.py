@@ -90,7 +90,7 @@ class ArduinoFloppyControlInterface:
         self.serial = Serial( \
             self.serialDevice, \
             2000000, \
-            timeout=5, \
+            timeout=10, \
             exclusive=True, \
             rtscts=True
             #bytesize=Serial.EIGHTBITS \
@@ -124,6 +124,19 @@ class ArduinoFloppyControlInterface:
         (cmd, label) = self.cmd[cmdname]
         if self.connectionEstablished is False:
             self.openSerialConnection()
+        # check if Arduino is sending something, we may not have read all its previous output
+        saved_timeout=self.serial.timeout
+        read_data=bytes()
+        self.serial.timeout=0
+        data=self.serial.read(1024)
+        while len(data) !=0:
+            read_data += data
+            self.serial.timeout=1
+            data=self.serial.read(1024)
+        self.serial.timeout=saved_timeout
+        if len(read_data) != 0:
+            print("WARNING: unexepected data read from Arduino:" +repr(read_data))
+        
         if cmdname == "version" or self.connectionIsUsable(cmdname) is True:
             starttime_serialcmd = time.time()
             #print ("...Processing cmd '" + cmdname+ "'")
@@ -301,11 +314,11 @@ class ArduinoFloppyControlInterface:
             self.serial.write(self.cmd["read_track_from_index_pulse"][0])
         #speedup for Linux where pyserial seems to be very optimized
         if platform.system() in ( 'Linux', 'Darwin') :
-            trackbytes = self.serial.read_until( self.hexZeroByte , 0x1900*2+0x44+1)
+            trackbytes = self.serial.read_until( self.hexZeroByte , 0x1900*2+0x440+1) # this is the RAW_TRACKDATA_LENGTH from ArduinoFloppyReader
             #workaround for problematic disks
             tracklength = len(trackbytes)
             if tracklength < 10223:
-                print ("Track length suspicously short: " + str(tracklength) + " bytes")
+                print ("Track length suspicously short: " + str(tracklength) + " bytes. Contents: " + repr(trackbytes))
         else:
             self.serial.timeout = 1
             trackbytes = self.serial.read(10380)

@@ -11,10 +11,25 @@ SingleTrackSectorListValidator() => maybe should also be changed
     __init__()
         instanciates SingleTrackSectorParser() => SingleIBMTrackSectorParser, + AMiga to be written
     processTrack()
-        calls AddValidSectors() which does CRC checks that must be changed for amiga too.
+
+        calls AddValidSectors(trackparser.detecSectors()) which does CRC checks that must be changed for amiga too.
 
 
 SingleAMigaTrackSectorPArser:
 could inherit SingleIBMTrackSectorParser
 rewrite of 
     getMarkers()
+    detectSectors() : returns an array of sectors from calls to parseSingleSector() 
+    parseSingleSector(): returns a dict containing mfm decoded data
+
+
+Sector dict:
+    headermeta => used in isValidCRC 
+    crc_header => used in isValidCRC . compared to CRC of headermeta
+    trackno => used in addValidSectors. Contains track number
+    sideno => used in addValidSectors. Contains side number
+    sectorno => used in addValidSecotrs. Contains sector number
+    sectorlength => used in addValidSectors. Contains sector length, in multiple of 256 bytes (should be 2 for 512)
+    crc_data => used in isValidCRC. compared to CRC of ( datameta + data)
+    datameta => used in isValidCRC
+    data => used in isValidCRC, addValidSectorData. Added to self.validSectorData

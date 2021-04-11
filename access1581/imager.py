@@ -52,14 +52,14 @@ class IBMDoubleDensityFloppyDiskImager:
             self.arduino = ArduinoFloppyControlInterface(serialDevice, diskFormat)
         self.arduino.openSerialConnection()
 
-        vldtr = SingleTrackSectorListValidator( retries, diskFormat, self.arduino, storeBitstream, stopOnError )
+        vldtr = self._getSingleTrackSectorListValidator( retries, diskFormat, storeBitstream, stopOnError )
         for trackno in diskFormat.trackRange:
             trackData[ trackno ] = {}
             rawTracks[ trackno ] = {}
             for headno in diskFormat.headRange:
                 trackDataTmp = vldtr.processTrack( trackno, headno )
                 if not len(trackDataTmp) == trackLength:
-                    print ("ERROR track should have " + str(trackLength) + " bytes but has " + str(len(trackData)))
+                    print ("ERROR track should have " + str(trackLength) + " bytes but has " + str(len(trackDataTmp)))
                 trackData[ trackno ][ headno ] = trackDataTmp
                 image += trackData[ trackno ][ headno ]
                 if storeBitstream is True:
@@ -79,6 +79,12 @@ class IBMDoubleDensityFloppyDiskImager:
             with open('raw_debug_image_d81.py', "w") as f:
                 f.write(repr(rawTracks))
         vldtr.printSerialStats()
+    
+    def _getSingleTrackSectorListValidator(self,retries, diskFormat, storeBitstream, stopOnError):
+        if issubclass(diskFormat.__class__, diskFormatAmiga):
+            return SingleAmigaTrackSectorListValidator(retries, diskFormat, self.arduino, storeBitstream, stopOnError)
+        else:
+            return SingleTrackSectorListValidator( retries, diskFormat, self.arduino, storeBitstream, stopOnError)
 
 class SingleTrackSectorListValidator:
     '''
@@ -342,6 +348,67 @@ class SingleIBMTrackSectorParser:
         print ( "Total duration other serial commands: " + tdtc + " seconds")
         print ( "Total duration of all decompressions: " + tdtd + " seconds")
 
+class SingleAmigaTrackSectorListValidator(SingleTrackSectorListValidator):
+    def __init__(self, retries, diskFormat, arduinoInterface, storeBitstream = False, stopOnError = False):
+        self.maxRetries = retries
+        self.diskFormat = diskFormat
+        self.minSectorNumber = 0
+        self.validSectorData = {}
+        self.storeBitstream = storeBitstream
+        self.decompressedBitstream = ""
+        self.arduino = arduinoInterface
+        self.trackParser = self._getSingleTrackSectorParser()
+        self.stopOnError = stopOnError
+        self.printSectorDebugInfo = False
+
+    def isValidCRC(self,sectorprops):
+        return sectorprops['crc_data']==sectorprops['computed_crc_data'] and sectorprops['crc_header']==sectorprops['computed_crc_header']
+
+    def printSectorDebugOutput(self, sectorprops, crcCheck):
+        # Content of a sector:
+        # trackno => track number (0-82)
+        # sideno => side number [0-1]
+        # sectorno => sector number
+        # crc_header => header checksum (read on disk)
+        # computed_crc_header => header checksum (computed)
+        # crc_data => data checksum (read from disk)
+        # computed_crc_data => data checksum (computed)
+        # data => data contents
+        infostring =""
+        for prop in sectorprops:
+            if prop != "data":
+                infostring += prop + ":" + str(sectorprops[prop]) + ", "
+        infostring += "CRC check "
+        infostring += "FAILED" if crcCheck is False else "SUCCESSFUL"
+        print ("  DEBUGINFO - Sector properties: "+ infostring)
+    
+    def addValidSectors(self, sectors, t, h, lastChance):
+        self.printSectorDebugInfo = False
+        printDebug = False
+        for sectorprops in sectors:
+            isSameTrack = True if sectorprops['trackno'] == t else False
+            isSameHead  = True if sectorprops['sideno'] == h else False
+
+            if isSameTrack is False:
+                self.handleError( "Wrong track number: " + str(sectorprops["trackno"]), sectorprops )
+            if isSameHead is False:
+                self.handleError( "Wrong head/side number: "+ str(sectorprops["sideno"]) + " Please check that you chose the right disk format (swapsides?).",sectorprops )
+            if int(sectorprops["sectorno"]) < self.minSectorNumber or \
+                int(sectorprops["sectorno"]) >= self.diskFormat.expectedSectorsPerTrack:
+                self.handleError( "Sector number is out of expected bounds: "+ str(sectorprops["sectorno"]),sectorprops )
+
+            crcCheck = self.isValidCRC(sectorprops)
+            if not sectorprops["sectorno"] in self.validSectorData:
+                if crcCheck is False and lastChance is True:
+                    print (f'  Invalid CRC for sector found, but adding sector data anyway: Head {h}, Track {t}, sector #{sectorprops["sectorno"]}')
+                    self.printSectorDebugInfo = True
+                if crcCheck is True or lastChance is True:
+                    self.validSectorData[ sectorprops["sectorno"] ] = sectorprops["data"]
+            #self.printSectorDebugInfo = True # DEBUG
+
+            if self.printSectorDebugInfo is True:
+                self.printSectorDebugOutput(sectorprops, crcCheck)
+
 class SingleAmigaTrackSectorParser(SingleIBMTrackSectorParser):
     def amigaMFMDecode(self, stream: str, *argv) -> bitstring.BitArray:
         '''
@@ -395,43 +462,66 @@ class SingleAmigaTrackSectorParser(SingleIBMTrackSectorParser):
                 sectorMarkers.append( previousBits )
                 dataMarkers.append(previousBits+28*8*2) # start of data offset
         
-        # seems we have the correct data to decode our sector here.
-        # following is according to http://lclevy.free.fr/adflib/adf_info.html#p23
-        for marker in sectorMarkers: # DEBUG
-            offset=marker
-            
-            # Header info: long (4 bytes) at offset 0x08
-            current_checksum=bitstring.BitArray(int=0,length=32)
-            info=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+64], current_checksum) # 64 bits MFM encoded => 32 bits of sector header info
-            print("Sector Header  info: " + info.hex)
-            offset+=4*8*2 # 4 bytes * 8bits *2(1 bit is 2 mfm encoded)
-
-            # Sector label: 4 longs at offset 0x10 (usually full of zeroes)
-            label=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(32*8)], current_checksum)
-            print('Sector Header label: ' + label.hex)
-            offset+= 4*4*8*2 # 4 longs = 4*4 bytes
-
-            print('Calc   checksum: ' + current_checksum.hex)
-            
-            # Header checksum: long at offset 0x30
-            header_checksum=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(32*2)])
-            print('Header checksum: ' + header_checksum.hex)
-            
-            offset +=4*8*2 
-
-            # Data checksum: long at offset 0x38
-            data_checksum=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(32*2)])
-            
-            offset +=4*8*2
-            print('Data offset:' + str(offset))
-            current_checksum=bitstring.BitArray(int=0,length=32)
-            # Data: 512 bytes at offset 0x40
-            data=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(512*8*2)],current_checksum)
-            print('Data: ' + repr(data.tobytes()))
-            print('Data checksum: ' + data_checksum.hex + ' (' + str(current_checksum == data_checksum) + ')')
-
-            offset += 512*8*2
-            print('offset at end: ' + str(offset))
-        print (sectorMarkers) # DEBUG
-        print (dataMarkers) # DEBUG
+        #print (sectorMarkers) # DEBUG
+        #print (dataMarkers) # DEBUG
         return (sectorMarkers, dataMarkers)
+    
+    def parseSingleSector(self, sectorStart, dataMarker):
+
+        offset=sectorStart
+        sector= {}
+        # dict: content of a sector
+        # trackno => track number (0-82)
+        # sideno => side number [0-1]
+        # sectorno => sector number
+        # crc_header => header checksum (read on disk)
+        # computed_crc_header => header checksum (computed)
+        # crc_data => data checksum (read from disk)
+        # computed_crc_data => data checksum (computed)
+        # data => data contents
+        
+        # following is according to http://lclevy.free.fr/adflib/adf_info.html#p23
+
+        # Header info: long (4 bytes) at offset 0x08
+        current_checksum=bitstring.BitArray(int=0,length=32)
+        info=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+64], current_checksum) # 64 bits MFM encoded => 32 bits of sector header info
+
+        check,track_no,sector_no,sectors_left=info.unpack('uint:8,'*3+'uint:8')
+        # track_no on disk is 0 to 159 for (0,side 0) to (79,side 1)
+        sector['sideno']=track_no % 2
+        sector['trackno']= int(track_no / 2)
+        sector['sectorno']=sector_no
+        
+        # assert(check == 255), 'invalid info'
+        # assert(sector_no+sectors_left==11), 'invalid info'
+        
+        offset+=4*8*2 # 4 bytes * 8bits *2(1 bit is 2 mfm encoded)
+
+        # Sector label: 4 longs at offset 0x10 (usually full of zeroes)
+        label=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(32*8)], current_checksum)
+        sector['computed_crc_header']= current_checksum.hex
+
+        offset+= 4*4*8*2 # 4 longs = 4*4 bytes
+
+
+        # Header checksum: long at offset 0x30
+        header_checksum=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(32*2)])
+        sector['crc_header']=header_checksum.hex
+
+        offset +=4*8*2 
+
+        # Data checksum: long at offset 0x38
+        data_checksum=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(32*2)])
+        sector['crc_data']=data_checksum.hex
+        
+        offset +=4*8*2
+
+        current_checksum=bitstring.BitArray(int=0,length=32)
+        # Data: 512 bytes at offset 0x40
+        data=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(512*8*2)],current_checksum)
+        sector['data']=data.hex
+        sector['computed_crc_data']=current_checksum.hex
+
+        offset += 512*8*2
+
+        return sector 
