@@ -160,6 +160,9 @@ class ArduinoFloppyControlInterface:
                     raise Exception ( label2 + ": Something went wrong! Disk is probably write protected!")
                 else:
                     raise Exception ( label2 + ": Something went wrong! Reply was " + str(reply))
+            # reset track number when rewind command was successful
+            if cmdname == "rewind":
+                self.currentTrack=0
         else:
             raise Exception ( label + ": Connection was not usable!")
 

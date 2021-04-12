@@ -84,7 +84,7 @@ class IBMDoubleDensityFloppyDiskImager:
         if issubclass(diskFormat.__class__, diskFormatAmiga):
             return SingleAmigaTrackSectorListValidator(retries, diskFormat, self.arduino, storeBitstream, stopOnError)
         else:
-            return SingleTrackSectorListValidator( retries, diskFormat, self.arduino, storeBitstream, stopOnError)
+            return SingleIBMTrackSectorListValidator( retries, diskFormat, self.arduino, storeBitstream, stopOnError)
 
 class SingleTrackSectorListValidator:
     '''
@@ -100,18 +100,9 @@ class SingleTrackSectorListValidator:
         self.storeBitstream = storeBitstream
         self.decompressedBitstream = ""
         self.arduino = arduinoInterface
-        self.trackParser = self._getSingleTrackSectorParser()
+        self.trackParser = SingleIBMTrackSectorParser(self.diskFormat, self.arduino) # should be defined by subclass
         self.stopOnError = stopOnError
         self.printSectorDebugInfo = False
-
-    def _getSingleTrackSectorParser(self):
-        '''
-        returns the appropriate track sector parser for the current diskFormat
-        '''
-        if issubclass(self.diskFormat.__class__, diskFormatAmiga):
-            return SingleAmigaTrackSectorParser(self.diskFormat, self.arduino)
-        else:
-            return SingleIBMTrackSectorParser(self.diskFormat, self.arduino)
 
     def printSerialStats(self):
         self.trackParser.printSerialStats()
@@ -134,6 +125,9 @@ class SingleTrackSectorListValidator:
                 self.retries = 0
             else:
                 self.retries = self.retries -1
+                # reposition the drive's head before trying again
+                self.arduino.sendCommand("rewind")
+
         if len(self.validSectorData) == self.diskFormat.expectedSectorsPerTrack:
             for sectorno in sorted(self.validSectorData):
                 if not len(self.validSectorData[sectorno]) == self.diskFormat.sectorSize * 2:
@@ -217,6 +211,11 @@ class SingleTrackSectorListValidator:
         infostring += "FAILED" if crcCheck is False else "SUCCESSFUL"
         print ("  DEBUGINFO - Sector properties: "+ infostring)
 
+class SingleIBMTrackSectorListValidator(SingleTrackSectorListValidator):
+    def __init__(self, retries, diskFormat, arduinoInterface, storeBitstream = False, stopOnError = False):
+        super().__init__(retries, diskFormat, arduinoInterface, storeBitstream, stopOnError)
+        self.trackParser = SingleIBMTrackSectorParser(self.diskFormat, self.arduino)
+    
 class SingleIBMTrackSectorParser:
     '''
     reads the requested track from the disk parses the data into complete
@@ -350,16 +349,9 @@ class SingleIBMTrackSectorParser:
 
 class SingleAmigaTrackSectorListValidator(SingleTrackSectorListValidator):
     def __init__(self, retries, diskFormat, arduinoInterface, storeBitstream = False, stopOnError = False):
-        self.maxRetries = retries
-        self.diskFormat = diskFormat
+        super().__init__(retries, diskFormat, arduinoInterface, storeBitstream, stopOnError)
         self.minSectorNumber = 0
-        self.validSectorData = {}
-        self.storeBitstream = storeBitstream
-        self.decompressedBitstream = ""
-        self.arduino = arduinoInterface
-        self.trackParser = self._getSingleTrackSectorParser()
-        self.stopOnError = stopOnError
-        self.printSectorDebugInfo = False
+        self.trackParser = SingleAmigaTrackSectorParser(self.diskFormat, self.arduino)
 
     def isValidCRC(self,sectorprops):
         return sectorprops['crc_data']==sectorprops['computed_crc_data'] and sectorprops['crc_header']==sectorprops['computed_crc_header']
@@ -446,9 +438,12 @@ class SingleAmigaTrackSectorParser(SingleIBMTrackSectorParser):
         return decoded
 
     def getMarkers(self):
+        '''
+        searches sector starts in the read data
+        returns offsets of the sector info and data in the bitstream. 
+        '''
         sectorMarkers = []
         dataMarkers = []
-        dataMarkersTmp = []
         rawSectors = re.split( self.diskFormat.sectorStartMarker, self.decompressedBitstream)
         if len(rawSectors) > 0:
             self.firstSectorOffset = len( rawSectors[0] )
@@ -467,11 +462,14 @@ class SingleAmigaTrackSectorParser(SingleIBMTrackSectorParser):
         return (sectorMarkers, dataMarkers)
     
     def parseSingleSector(self, sectorStart, dataMarker):
-
+        '''
+        Reads a single sector        
+        Returns the sector's contents in a dict
+        '''
         offset=sectorStart
         sector= {}
         # dict: content of a sector
-        # trackno => track number (0-82)
+        # trackno => track number (0-79)
         # sideno => side number [0-1]
         # sectorno => sector number
         # crc_header => header checksum (read on disk)
@@ -482,8 +480,11 @@ class SingleAmigaTrackSectorParser(SingleIBMTrackSectorParser):
         
         # following is according to http://lclevy.free.fr/adflib/adf_info.html#p23
 
-        # Header info: long (4 bytes) at offset 0x08
+        # We compute and store checksums while decoding data.
+        # Checksum validity will be checked later
         current_checksum=bitstring.BitArray(int=0,length=32)
+
+        # Header info: long (4 bytes) at offset 0x08
         info=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+64], current_checksum) # 64 bits MFM encoded => 32 bits of sector header info
 
         check,track_no,sector_no,sectors_left=info.unpack('uint:8,'*3+'uint:8')
@@ -502,7 +503,6 @@ class SingleAmigaTrackSectorParser(SingleIBMTrackSectorParser):
         sector['computed_crc_header']= current_checksum.hex
 
         offset+= 4*4*8*2 # 4 longs = 4*4 bytes
-
 
         # Header checksum: long at offset 0x30
         header_checksum=self.amigaMFMDecode(self.decompressedBitstream[offset:offset+(32*2)])
